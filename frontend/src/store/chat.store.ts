@@ -1,6 +1,8 @@
 import { create } from "zustand";
-import { mockConversations } from "@/lib/mock-data";
 import type { ChatMessage, Conversation } from "@/types";
+
+// Extract base URL from your existing env var
+const API_BASE = (import.meta.env.VITE_AEGIS_API_URL || "https://mejatinrajani-mhpcd-aegis.hf.space/v1/chat").replace('/v1/chat', '');
 
 interface ChatState {
   conversations: Conversation[];
@@ -8,50 +10,161 @@ interface ChatState {
   isStreaming: boolean;
   abortController: AbortController | null;
 
+  initData: () => Promise<void>;
+  loadMessages: (conversationId: string) => Promise<void>;
   setActive: (id: string | null) => void;
-  newConversation: () => string;
-  deleteConversation: (id: string) => void;
-  
-  // ADDED: imageUrl parameter and setReaction
+  newConversation: () => Promise<string>;
+  deleteConversation: (id: string) => Promise<void>;
+  renameConversation: (id: string, newTitle: string) => Promise<void>;
+  togglePin: (id: string) => Promise<void>;
+  setReaction: (messageId: string, reaction: "like" | "dislike" | null) => Promise<void>;
   sendMessage: (content: string, imageUrl?: string) => Promise<void>;
-  setReaction: (messageId: string, reaction: "like" | "dislike" | null) => void;
-  
   regenerateLast: () => Promise<void>;
   stopGeneration: () => void;
 }
 
+// Fallback ID generator for optimistic UI updates
 function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
-  conversations: mockConversations,
+  conversations: [], // Start empty, fetch from DB
   activeId: null,
   isStreaming: false,
   abortController: null,
 
-  setActive: (id) => set({ activeId: id }),
+  // --- 1. INITIALIZE DATABASE ---
+  initData: async () => {
+    try {
+      const res = await fetch(`${API_BASE}/conversations`);
+      if (!res.ok) return;
+      const data = await res.json();
+      
+      const parsedConversations: Conversation[] = data.map((d: any) => ({
+        id: d.id,
+        title: d.title,
+        updatedAt: d.updated_at,
+        pinned: d.is_pinned,
+        messages: [], // Messages load lazily when clicked
+      }));
 
-  newConversation: () => {
-    const id = uid("c");
-    const convo: Conversation = {
-      id,
-      title: "New conversation",
-      updatedAt: new Date().toISOString(),
-      messages: [],
-    };
-    set((s) => ({ conversations: [convo, ...s.conversations], activeId: id }));
-    return id;
+      set({ conversations: parsedConversations });
+      
+      // Auto-load messages for the most recent chat if it exists
+      if (parsedConversations.length > 0) {
+        get().setActive(parsedConversations[0].id);
+      }
+    } catch (error) {
+      console.error("Failed to init DB:", error);
+    }
   },
 
-  deleteConversation: (id) =>
+  // --- 2. LAZY LOAD MESSAGES ---
+  loadMessages: async (conversationId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/conversations/${conversationId}/messages`);
+      if (!res.ok) return;
+      const data = await res.json();
+
+      const messages: ChatMessage[] = data.map((m: any) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        imageUrl: m.image_url,
+        flagged: m.flagged,
+        score: m.score,
+        reaction: m.reaction,
+        createdAt: m.created_at,
+        guardrailScanned: true,
+      }));
+
+      set((s) => ({
+        conversations: s.conversations.map((c) =>
+          c.id === conversationId ? { ...c, messages } : c
+        ),
+      }));
+    } catch (error) {
+      console.error("Failed to load messages:", error);
+    }
+  },
+
+  setActive: (id) => {
+    set({ activeId: id });
+    const convo = get().conversations.find((c) => c.id === id);
+    // If we haven't loaded this chat's messages yet, fetch them!
+    if (id && convo && convo.messages.length === 0) {
+      get().loadMessages(id);
+    }
+  },
+
+  // --- 3. CRUD OPERATIONS (Optimistic UI + DB Fetch) ---
+  newConversation: async () => {
+    try {
+      const res = await fetch(`${API_BASE}/conversations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "New Conversation" }),
+      });
+      const dbConvo = await res.json();
+
+      const convo: Conversation = {
+        id: dbConvo.id,
+        title: dbConvo.title,
+        updatedAt: dbConvo.updated_at,
+        pinned: dbConvo.is_pinned,
+        messages: [],
+      };
+
+      set((s) => ({ conversations: [convo, ...s.conversations], activeId: convo.id }));
+      return convo.id;
+    } catch (error) {
+      console.error("Failed to create chat:", error);
+      return uid("c");
+    }
+  },
+
+  deleteConversation: async (id) => {
+    // Optimistic UI Update
     set((s) => ({
       conversations: s.conversations.filter((c) => c.id !== id),
       activeId: s.activeId === id ? null : s.activeId,
-    })),
+    }));
+    // Background DB Update
+    fetch(`${API_BASE}/conversations/${id}`, { method: "DELETE" }).catch(console.error);
+  },
 
-  // ADDED: Reaction toggle logic
-  setReaction: (messageId, reaction) =>
+  renameConversation: async (id, newTitle) => {
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === id ? { ...c, title: newTitle, updatedAt: new Date().toISOString() } : c
+      ),
+    }));
+    fetch(`${API_BASE}/conversations/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: newTitle }),
+    }).catch(console.error);
+  },
+
+  togglePin: async (id) => {
+    const convo = get().conversations.find((c) => c.id === id);
+    if (!convo) return;
+    const newPinStatus = !convo.pinned;
+
+    set((s) => ({
+      conversations: s.conversations.map((c) =>
+        c.id === id ? { ...c, pinned: newPinStatus } : c
+      ),
+    }));
+    fetch(`${API_BASE}/conversations/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ is_pinned: newPinStatus }),
+    }).catch(console.error);
+  },
+
+  setReaction: async (messageId, reaction) => {
     set((s) => ({
       conversations: s.conversations.map((c) => ({
         ...c,
@@ -59,12 +172,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
           m.id === messageId ? { ...m, reaction } : m
         ),
       })),
-    })),
+    }));
+    fetch(`${API_BASE}/messages/${messageId}/reaction`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reaction }),
+    }).catch(console.error);
+  },
 
-  // FIXED: Added imageUrl to the arguments here
+  // --- 4. THE CORE MESSAGE LOOP ---
   sendMessage: async (content, imageUrl) => {
     let activeId = get().activeId;
-    if (!activeId) activeId = get().newConversation();
+    if (!activeId) activeId = await get().newConversation(); // Wait for DB to create it
 
     const userMsg: ChatMessage = {
       id: uid("m"),
@@ -72,7 +191,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       content,
       createdAt: new Date().toISOString(),
       guardrailScanned: true,
-      imageUrl: imageUrl, // Now TypeScript knows where this comes from!
+      imageUrl: imageUrl, 
     };
     
     const assistantMsg: ChatMessage = {
@@ -96,7 +215,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ),
     }));
 
-    await fetchAegisReply(activeId, assistantMsg.id, content, set, get);
+    // If it's a new chat, auto-rename it in the DB to match the first prompt
+    if (get().conversations.find(c => c.id === activeId)?.messages.length === 2) {
+       get().renameConversation(activeId, truncateTitle(content));
+    }
+
+    await fetchAegisReply(activeId, assistantMsg.id, content, imageUrl, set, get);
   },
 
   regenerateLast: async () => {
@@ -104,6 +228,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (!activeId) return;
     const convo = conversations.find((c) => c.id === activeId);
     if (!convo) return;
+    
     const lastUser = [...convo.messages].reverse().find((m) => m.role === "user");
     if (!lastUser) return;
 
@@ -126,7 +251,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ),
     }));
     
-    await fetchAegisReply(activeId, assistantMsg.id, lastUser.content, set, get);
+    await fetchAegisReply(activeId, assistantMsg.id, lastUser.content, lastUser.imageUrl, set, get);
   },
 
   stopGeneration: () => {
@@ -141,10 +266,12 @@ function truncateTitle(s: string) {
   return t.length > 48 ? t.slice(0, 48) + "…" : t;
 }
 
+// --- THE CLOUD INTEGRATION FUNCTION ---
 async function fetchAegisReply(
   conversationId: string,
   assistantId: string,
   prompt: string,
+  imageUrl: string | undefined,
   set: (fn: (s: ChatState) => Partial<ChatState> | ChatState) => void,
   get: () => ChatState,
 ) {
@@ -157,7 +284,11 @@ async function fetchAegisReply(
     const res = await fetch(apiUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: prompt }),
+      body: JSON.stringify({ 
+        conversation_id: conversationId, 
+        message: prompt,
+        imageUrl: imageUrl // Pass the base64 image string to FastAPI
+      }),
       signal: controller.signal,
     });
 
@@ -165,6 +296,7 @@ async function fetchAegisReply(
 
     const data = await res.json();
     
+    // Inject response into UI and remove "streaming" state
     const conversations = get().conversations.map((c) =>
       c.id === conversationId
         ? {

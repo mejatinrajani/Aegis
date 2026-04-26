@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Paperclip, Send, X } from "lucide-react";
+import { Plus, Send, X } from "lucide-react";
 
 interface ChatComposerProps {
   onSend: (content: string, imageUrl?: string) => void;
@@ -11,6 +11,7 @@ export function ChatComposer({ onSend, onStop, isStreaming }: ChatComposerProps)
   const [text, setText] = useState("");
   const [image, setImage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Convert uploaded image to Base64
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -22,7 +23,6 @@ export function ChatComposer({ onSend, onStop, isStreaming }: ChatComposerProps)
       };
       reader.readAsDataURL(file);
     }
-    // Reset input so the same file can be selected again if removed
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -31,25 +31,47 @@ export function ChatComposer({ onSend, onStop, isStreaming }: ChatComposerProps)
     onSend(text, image || undefined);
     setText("");
     setImage(null);
+    
+    // Reset textarea height after sending
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+    }
+  };
+
+  // Auto-resize the textarea as the user types
+  const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setText(e.target.value);
+    e.target.style.height = "auto";
+    // Increased max height to 250px before scrolling kicks in
+    e.target.style.height = `${Math.min(e.target.scrollHeight, 250)}px`; 
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault(); 
+      handleSend();
+    }
   };
 
   return (
-    <div className="flex flex-col w-full max-w-3xl mx-auto px-8 pb-6">
+    <div className="flex flex-col w-full max-w-3xl mx-auto px-8 pb-8">
       {/* Image Preview Area */}
       {image && (
-        <div className="relative w-24 h-24 mb-3 border rounded-md overflow-hidden bg-muted">
+        <div className="relative w-28 h-28 mb-4 border rounded-xl overflow-hidden bg-muted shadow-md transition-all animate-in zoom-in duration-200">
           <img src={image} alt="Upload preview" className="object-cover w-full h-full" />
           <button
             onClick={() => setImage(null)}
-            className="absolute top-1 right-1 p-1 bg-black/50 text-white rounded-full hover:bg-black/70"
+            className="absolute top-1.5 right-1.5 p-1.5 bg-black/60 text-white rounded-full hover:bg-black/80 hover:scale-105 active:scale-95 backdrop-blur-sm transition-all"
           >
-            <X size={14} />
+            <X size={16} />
           </button>
         </div>
       )}
 
-      {/* Input Box */}
-      <div className="relative flex items-center w-full border rounded-lg bg-background shadow-sm focus-within:ring-1 focus-within:ring-primary">
+      {/* Upgraded Composer Box - Increased outer padding (p-2) */}
+      <div className="relative flex items-end w-full border rounded-2xl bg-background shadow-sm focus-within:ring-2 focus-within:ring-primary/50 focus-within:border-primary transition-all p-2">
+        
+        {/* Hidden File Input */}
         <input
           type="file"
           accept="image/*"
@@ -57,35 +79,41 @@ export function ChatComposer({ onSend, onStop, isStreaming }: ChatComposerProps)
           ref={fileInputRef}
           onChange={handleImageUpload}
         />
+        
+        {/* Attach Button - Added rotation, scaling, and colored hover state */}
         <button
           onClick={() => fileInputRef.current?.click()}
-          className="p-3 text-muted-foreground hover:text-foreground transition-colors"
+          className="p-3 mb-0.5 text-muted-foreground transition-all duration-200 ease-out rounded-xl hover:scale-110 hover:-rotate-12 active:scale-95 active:rotate-0"
           title="Attach image"
         >
-          <Paperclip size={20} />
+          <Plus size={28} />
         </button>
 
-        <input
-          type="text"
+        {/* Auto-resizing Textarea - Increased padding and minimum height */}
+        <textarea
+          ref={textareaRef}
           value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
-          placeholder="Message Aegis Guard... (Press Enter to send)"
-          className="flex-1 py-3 px-2 bg-transparent outline-none border-none placeholder:text-muted-foreground"
+          onChange={handleInput}
+          onKeyDown={handleKeyDown}
+          placeholder="Message Aegis Guard... (Shift+Enter for new line)"
+          rows={1}
+          className="flex-1 py-4 px-4 min-h-[60px] bg-transparent outline-none border-none placeholder:text-muted-foreground resize-none overflow-y-auto text-[17px] leading-relaxed"
         />
 
+        {/* Send/Stop Button - Enhanced shadow and scale physics */}
         <button
           onClick={isStreaming ? onStop : handleSend}
-          className={`p-3 mx-1 rounded-md transition-colors ${
+          className={`p-3 mb-0.5 mx-1 rounded-xl transition-all duration-200 ease-out ${
             text.trim() || image
-              ? "text-white bg-primary hover:bg-primary/90"
-              : "text-muted-foreground"
+              ? "text-white bg-primary shadow-md hover:shadow-lg hover:scale-105 active:scale-95"
+              : "text-muted-foreground bg-transparent hover:bg-muted"
           }`}
         >
-          <Send size={18} />
+          <Send size={26} className={text.trim() || image ? "ml-0.5" : ""} />
         </button>
       </div>
-      <p className="text-xs text-center text-muted-foreground mt-2">
+
+      <p className="text-sm text-center text-muted-foreground mt-4 font-medium tracking-wide opacity-80">
         Aegis scans every prompt and response across three guardrail gates.
       </p>
     </div>

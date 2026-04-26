@@ -23,6 +23,7 @@ function ChatPage() {
 }
 
 function ChatThread() {
+  const initData = useChatStore((s) => s.initData);
   const conversations = useChatStore((s) => s.conversations);
   const activeId = useChatStore((s) => s.activeId);
   const isStreaming = useChatStore((s) => s.isStreaming);
@@ -40,6 +41,10 @@ function ChatThread() {
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [messages, isStreaming]);
+
+  useEffect(() => {
+    initData();
+  }, [initData]);
 
   const empty = messages.length === 0;
   const lastAssistantStreaming =

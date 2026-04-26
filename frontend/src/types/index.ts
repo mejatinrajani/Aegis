@@ -31,6 +31,7 @@ export interface Conversation {
   id: string;
   title: string;
   updatedAt: string;
+  pinned?: boolean;
   messages: ChatMessage[];
 }
 
